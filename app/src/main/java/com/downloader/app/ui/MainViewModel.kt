@@ -21,12 +21,16 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 data class MainUiState(
     val url: String = "",
     val isLoadingInfo: Boolean = false,
     val mediaInfo: MediaInfo? = null,
     val jobs: List<DownloadJob> = emptyList(),
+    val downloadedFiles: List<File> = emptyList(),
     val downloadFolderUri: String? = null,
     val error: String? = null,
     val infoMessage: String? = null
@@ -149,6 +153,17 @@ class MainViewModel @Inject constructor(
         DownloadService.cancelDownload(appContext, jobId)
     }
 
+    fun clearAllJobs() {
+        viewModelScope.launch {
+            _uiState.value.jobs.forEach { job ->
+                if (job.status == DownloadStatus.QUEUED || job.status == DownloadStatus.RUNNING) {
+                    DownloadService.cancelDownload(appContext, job.id)
+                }
+                downloadJobRepository.deleteJob(job.id)
+            }
+        }
+    }
+
     fun retryJob(jobId: String) {
         viewModelScope.launch {
             val job = downloadJobRepository.getJob(jobId) ?: return@launch
@@ -165,5 +180,43 @@ class MainViewModel @Inject constructor(
 
     fun clearMessage() {
         _uiState.update { it.copy(error = null, infoMessage = null) }
+    }
+
+    fun refreshDownloadedFiles() {
+        viewModelScope.launch {
+            val dirPath = storageResolver.resolveOutputDirectory(_uiState.value.downloadFolderUri)
+            val dir = File(dirPath)
+            val files = withContext(Dispatchers.IO) {
+                if (dir.exists() && dir.isDirectory) {
+                    dir.listFiles()?.filter { it.isFile } ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
+            _uiState.update { it.copy(downloadedFiles = files) }
+        }
+    }
+
+    fun renameDownloadedFile(file: File, newName: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val newFile = File(file.parent, newName)
+            if (file.renameTo(newFile)) {
+                refreshDownloadedFiles()
+                _uiState.update { it.copy(infoMessage = "File renamed successfully") }
+            } else {
+                _uiState.update { it.copy(error = "Failed to rename file") }
+            }
+        }
+    }
+
+    fun deleteDownloadedFile(file: File) {
+        viewModelScope.launch(Dispatchers.IO) {
+            if (file.delete()) {
+                refreshDownloadedFiles()
+                _uiState.update { it.copy(infoMessage = "File deleted successfully") }
+            } else {
+                _uiState.update { it.copy(error = "Failed to delete file") }
+            }
+        }
     }
 }
