@@ -137,6 +137,14 @@ fun HomeScreen(
             ) {
                 Column(modifier = Modifier.padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(info.title ?: "Unknown title", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    if (info.isPlaylist) {
+                        Text(
+                            "Playlist Detected: ${info.playlistEntries?.size ?: 0} Videos",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
                     Text("Uploader: ${info.uploader ?: "Unknown"}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
                     Text("Duration: ${formatDurationHumanReadable(info.duration)}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f))
                 }

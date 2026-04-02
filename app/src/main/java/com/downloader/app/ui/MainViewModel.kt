@@ -114,24 +114,54 @@ class MainViewModel @Inject constructor(
             }
 
             val settings = settingsRepository.getSettings()
-            val jobId = UUID.randomUUID().toString()
             val resolvedOutputPath = storageResolver.resolveOutputDirectory(settings.downloadFolderUri)
-            val job = DownloadJob(
-                id = jobId,
-                url = url,
-                title = current.mediaInfo?.title,
-                outputPath = resolvedOutputPath,
-                format = null,
-                audioOnly = audioOnly,
-                includeSubtitles = settings.defaultIncludeSubtitles,
-                includeThumbnail = settings.defaultIncludeThumbnail,
-                status = DownloadStatus.QUEUED
-            )
 
-            downloadJobRepository.insertJob(job)
-            DownloadService.startDownload(appContext, jobId)
+            val playlistEntries = current.mediaInfo
+                ?.playlistEntries
+                ?.filter { it.url.startsWith("http") }
+                ?.takeIf { current.mediaInfo.isPlaylist && it.isNotEmpty() }
 
-            _uiState.update { it.copy(infoMessage = "Added to queue", error = null) }
+            val jobsToQueue = if (playlistEntries != null) {
+                playlistEntries.map { entry ->
+                    DownloadJob(
+                        id = UUID.randomUUID().toString(),
+                        url = entry.url,
+                        title = entry.title,
+                        outputPath = resolvedOutputPath,
+                        format = null,
+                        audioOnly = audioOnly,
+                        includeSubtitles = settings.defaultIncludeSubtitles,
+                        includeThumbnail = settings.defaultIncludeThumbnail,
+                        status = DownloadStatus.QUEUED
+                    )
+                }
+            } else {
+                listOf(
+                    DownloadJob(
+                        id = UUID.randomUUID().toString(),
+                        url = current.mediaInfo?.url?.takeIf { it.startsWith("http") } ?: url,
+                        title = current.mediaInfo?.title,
+                        outputPath = resolvedOutputPath,
+                        format = null,
+                        audioOnly = audioOnly,
+                        includeSubtitles = settings.defaultIncludeSubtitles,
+                        includeThumbnail = settings.defaultIncludeThumbnail,
+                        status = DownloadStatus.QUEUED
+                    )
+                )
+            }
+
+            jobsToQueue.forEach { job ->
+                downloadJobRepository.insertJob(job)
+                DownloadService.startDownload(appContext, job.id)
+            }
+
+            val message = if (jobsToQueue.size == 1) {
+                "Added to queue"
+            } else {
+                "Queued ${jobsToQueue.size} items"
+            }
+            _uiState.update { it.copy(infoMessage = message, error = null) }
         }
     }
 

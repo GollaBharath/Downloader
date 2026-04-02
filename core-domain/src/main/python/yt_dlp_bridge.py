@@ -7,7 +7,7 @@ def fetch_info(url):
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
-        "noplaylist": True,
+        "extract_flat": "in_playlist",
     }
     with YoutubeDL(options) as ydl:
         info = ydl.extract_info(url, download=False)

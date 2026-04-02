@@ -56,7 +56,9 @@ data class MediaInfo(
     val uploader: String?,
     val uploadDate: String?,
     val viewCount: Long?,
-    val formats: List<FormatInfo> = emptyList()
+    val formats: List<FormatInfo> = emptyList(),
+    val isPlaylist: Boolean = false,
+    val playlistEntries: List<MediaInfo>? = null
 )
 
 @Serializable
