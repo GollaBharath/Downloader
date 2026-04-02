@@ -1,0 +1,40 @@
+# Gradle
+.gradle/
+**/build/
+!gradle/wrapper/gradle-wrapper.jar
+gradle-*/
+gradle.zip
+
+# Android build artifacts
+*.apk
+*.aab
+*.ap_
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Kotlin/Java
+*.class
+out/
+
+# Python / Chaquopy
+__pycache__/
+*.py[cod]
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Keystores / secrets
+*.jks
+*.keystore
+*.pem
+*.key

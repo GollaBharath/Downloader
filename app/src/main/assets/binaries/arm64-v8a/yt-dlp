@@ -1,0 +1,24 @@
+#!/bin/sh
+# yt-dlp placeholder binary for MVP
+echo "yt-dlp placeholder - version 2024.03.10"
+if [ "$1" = "--version" ]; then
+    echo "yt-dlp 2024.03.10"
+    exit 0
+fi
+if [ "$1" = "--list-formats" ]; then
+    echo "format code  extension  resolution note"
+    echo "140          m4a        audio only tiny  49k , m4a_dash container, mp4a.40.5@ 49k (22050Hz)"
+    echo "18           mp4        640x360    small  96k , avc1.42001E, 25fps, mp4a.40.2@ 96k (44100Hz)"
+    echo "22           mp4        1280x720   hd720 192k , avc1.64001F, 25fps, mp4a.40.2@192k (44100Hz)"
+    echo "best         mp4        1920x1080  best available quality"
+    exit 0
+fi
+if [ "$1" = "--dump-json" ]; then
+    echo '{"title":"Sample Video","duration":180,"thumbnail":"https://example.com/thumb.jpg","uploader":"Sample Channel"}'
+    exit 0
+fi
+echo "This is a placeholder for yt-dlp. Download would simulate here."
+echo "[download] 50.0% of 10.0MiB at 1.0MiB/s ETA 00:10"
+sleep 1
+echo "[download] 100.0% of 10.0MiB in 00:10"
+exit 0

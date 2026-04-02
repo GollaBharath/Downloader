@@ -1,0 +1,9 @@
+#!/bin/sh
+# ffmpeg placeholder binary for MVP
+echo "ffmpeg placeholder - version 6.1.1"
+if [ "$1" = "-version" ]; then
+    echo "ffmpeg version 6.1.1"
+    exit 0
+fi
+echo "This is a placeholder for ffmpeg. Processing would happen here."
+exit 0
