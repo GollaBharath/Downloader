@@ -116,10 +116,15 @@ class MainViewModel @Inject constructor(
             val settings = settingsRepository.getSettings()
             val resolvedOutputPath = storageResolver.resolveOutputDirectory(settings.downloadFolderUri)
 
-            val playlistEntries = current.mediaInfo
-                ?.playlistEntries
-                ?.filter { it.url.startsWith("http") }
-                ?.takeIf { current.mediaInfo.isPlaylist && it.isNotEmpty() }
+            val rawPlaylistEntries = if (current.mediaInfo?.isPlaylist == true) {
+                current.mediaInfo.playlistEntries.orEmpty()
+            } else {
+                emptyList()
+            }
+            val playlistEntries = rawPlaylistEntries
+                .filter { it.url.startsWith("http") }
+                .takeIf { it.isNotEmpty() }
+            val skippedPlaylistEntries = rawPlaylistEntries.size - (playlistEntries?.size ?: 0)
 
             val jobsToQueue = if (playlistEntries != null) {
                 playlistEntries.map { entry ->
@@ -153,13 +158,24 @@ class MainViewModel @Inject constructor(
 
             jobsToQueue.forEach { job ->
                 downloadJobRepository.insertJob(job)
-                DownloadService.startDownload(appContext, job.id)
+            }
+
+            jobsToQueue.firstOrNull()?.let { firstJob ->
+                DownloadService.startDownload(appContext, firstJob.id)
             }
 
             val message = if (jobsToQueue.size == 1) {
-                "Added to queue"
+                if (skippedPlaylistEntries > 0) {
+                    "Added to queue (skipped $skippedPlaylistEntries unavailable entries)"
+                } else {
+                    "Added to queue"
+                }
             } else {
-                "Queued ${jobsToQueue.size} items"
+                if (skippedPlaylistEntries > 0) {
+                    "Queued ${jobsToQueue.size} items (skipped $skippedPlaylistEntries unavailable entries)"
+                } else {
+                    "Queued ${jobsToQueue.size} items"
+                }
             }
             _uiState.update { it.copy(infoMessage = message, error = null) }
         }

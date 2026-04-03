@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import com.downloader.core.domain.model.DownloadJob
 import com.downloader.core.domain.model.DownloadPhase
@@ -19,8 +20,8 @@ import com.downloader.core.domain.repository.ProgressRepository
 import com.downloader.engine.executor.DownloadExecutor
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -35,8 +36,11 @@ class DownloadService : Service() {
     @Inject
     lateinit var downloadExecutor: DownloadExecutor
 
-    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private val serviceScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
+    private val queueMutex = Mutex()
     private var currentJobId: String? = null
+    private var activeDownloadTask: Job? = null
+    private var wakeLock: PowerManager.WakeLock? = null
     
     companion object {
         const val ACTION_START_DOWNLOAD = "com.downloader.action.START_DOWNLOAD"
@@ -70,16 +74,8 @@ class DownloadService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createIdleNotification())
-        
-        // Monitor queue for new downloads
-        serviceScope.launch {
-            jobRepository.getJobsByStatus(JobStatus.QUEUED)
-                .collect { queuedJobs: List<DownloadJob> ->
-                    if (currentJobId == null && queuedJobs.isNotEmpty()) {
-                        startNextDownload(queuedJobs.first())
-                    }
-                }
-        }
+        initializeWakeLock()
+        requestQueueProcessing()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -109,47 +105,21 @@ class DownloadService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        serviceScope.cancel()
-    }
-
-    private suspend fun startNextDownload(job: DownloadJob) {
-        currentJobId = job.id
-        
-        // Update job status
-        val updatedJob = job.copy(status = JobStatus.RUNNING)
-        jobRepository.updateJob(updatedJob)
-        
-        // Start executing download
-        serviceScope.launch {
-            try {
-                downloadExecutor.executeDownload(job)
-                    .collect { progress ->
-                        updateNotification(job, progress)
-                        progressRepository.updateProgress(progress)
-                        
-                        // Check if download completed
-                        if (progress.phase == DownloadPhase.COMPLETED) {
-                            val completedJob = job.copy(status = JobStatus.SUCCEEDED)
-                            jobRepository.updateJob(completedJob)
-                            onDownloadCompleted(job)
-                        } else if (progress.phase == DownloadPhase.FAILED) {
-                            val failedJob = job.copy(status = JobStatus.FAILED, errorMessage = progress.errorMessage ?: "Unknown error")
-                            jobRepository.updateJob(failedJob)
-                            onDownloadFailed(job, progress.errorMessage ?: "Unknown error")
-                        }
-                    }
-            } catch (e: Exception) {
-                val errorJob = job.copy(status = JobStatus.FAILED, errorMessage = e.message ?: "Unknown error")
-                jobRepository.updateJob(errorJob)
-                onDownloadFailed(job, e.message ?: "Unknown error")
+        wakeLock?.let {
+            if (it.isHeld) {
+                it.release()
             }
         }
+        serviceScope.cancel()
     }
 
     private fun startDownload(jobId: String) {
         serviceScope.launch {
             val job = jobRepository.getJob(jobId)
-            job?.let { startNextDownload(it) }
+            if (job != null && job.status == JobStatus.RUNNING) {
+                return@launch
+            }
+            requestQueueProcessing()
         }
     }
 
@@ -158,11 +128,18 @@ class DownloadService : Service() {
             downloadExecutor.cancelDownload(jobId)
             val job = jobRepository.getJob(jobId)
             job?.let { 
-                val cancelledJob = it.copy(status = JobStatus.CANCELLED)
+                val cancelledJob = it.copy(
+                    status = JobStatus.CANCELLED,
+                    completedAt = System.currentTimeMillis(),
+                    errorMessage = null
+                )
                 jobRepository.updateJob(cancelledJob)
             }
-            currentJobId = null
-            checkForNextDownload()
+            if (currentJobId == jobId) {
+                activeDownloadTask?.cancel(CancellationException("Cancelled by user"))
+                currentJobId = null
+            }
+            requestQueueProcessing()
         }
     }
 
@@ -174,6 +151,11 @@ class DownloadService : Service() {
                 val pausedJob = it.copy(status = JobStatus.QUEUED)  // For MVP, paused jobs go back to queued
                 jobRepository.updateJob(pausedJob)
             }
+            if (currentJobId == jobId) {
+                activeDownloadTask?.cancel(CancellationException("Paused by user"))
+                currentJobId = null
+            }
+            requestQueueProcessing()
         }
     }
 
@@ -181,43 +163,143 @@ class DownloadService : Service() {
         serviceScope.launch {
             val job = jobRepository.getJob(jobId)
             job?.let { 
-                val resumedJob = it.copy(status = JobStatus.RUNNING)
+                val resumedJob = it.copy(status = JobStatus.QUEUED)
                 jobRepository.updateJob(resumedJob)
-                startNextDownload(it)
+            }
+            requestQueueProcessing()
+        }
+    }
+
+    private fun requestQueueProcessing() {
+        serviceScope.launch {
+            queueMutex.withLock {
+                if (activeDownloadTask?.isActive == true) {
+                    return@withLock
+                }
+
+                val nextJob = jobRepository.getNextQueuedJob()
+                if (nextJob == null) {
+                    if (currentJobId == null) {
+                        updateIdleNotification()
+                        stopSelf()
+                    }
+                    return@withLock
+                }
+
+                activeDownloadTask = serviceScope.launch {
+                    processDownload(nextJob)
+                }
             }
         }
     }
 
-    private fun onDownloadCompleted(job: DownloadJob) {
-        currentJobId = null
-        updateNotification(job, createCompletedProgress(job.id))
-        
-        // Check for next download after a short delay
-        serviceScope.launch {
-            delay(2000)
-            checkForNextDownload()
+    private suspend fun processDownload(job: DownloadJob) {
+        currentJobId = job.id
+        acquireWakeLock()
+
+        val runningJob = job.copy(
+            status = JobStatus.RUNNING,
+            errorMessage = null,
+            completedAt = null
+        )
+        jobRepository.updateJob(runningJob)
+
+        var terminalPhaseHandled = false
+
+        try {
+            downloadExecutor.executeDownload(runningJob).collect { progress ->
+                updateNotification(runningJob, progress)
+                progressRepository.updateProgress(progress)
+
+                when (progress.phase) {
+                    DownloadPhase.COMPLETED -> {
+                        terminalPhaseHandled = true
+                        val completedJob = runningJob.copy(
+                            status = JobStatus.SUCCEEDED,
+                            completedAt = System.currentTimeMillis(),
+                            errorMessage = null
+                        )
+                        jobRepository.updateJob(completedJob)
+                    }
+
+                    DownloadPhase.FAILED -> {
+                        terminalPhaseHandled = true
+                        val message = progress.errorMessage ?: "Unknown error"
+                        val failedJob = runningJob.copy(
+                            status = JobStatus.FAILED,
+                            errorMessage = message,
+                            completedAt = System.currentTimeMillis()
+                        )
+                        jobRepository.updateJob(failedJob)
+                    }
+
+                    else -> Unit
+                }
+            }
+        } catch (ce: CancellationException) {
+            throw ce
+        } catch (e: Exception) {
+            val message = e.message ?: "Unknown error"
+            val failedJob = runningJob.copy(
+                status = JobStatus.FAILED,
+                errorMessage = message,
+                completedAt = System.currentTimeMillis()
+            )
+            jobRepository.updateJob(failedJob)
+            updateNotification(runningJob, createFailedProgress(runningJob.id, message))
+        } finally {
+            if (!terminalPhaseHandled) {
+                val latestJob = jobRepository.getJob(runningJob.id)
+                if (latestJob?.status == JobStatus.RUNNING) {
+                    val failedJob = runningJob.copy(
+                        status = JobStatus.FAILED,
+                        errorMessage = "Download ended unexpectedly",
+                        completedAt = System.currentTimeMillis()
+                    )
+                    jobRepository.updateJob(failedJob)
+                    updateNotification(runningJob, createFailedProgress(runningJob.id, "Download ended unexpectedly"))
+                }
+            }
+
+            currentJobId = null
+            releaseWakeLock()
+
+            queueMutex.withLock {
+                activeDownloadTask = null
+            }
+            requestQueueProcessing()
         }
     }
 
-    private fun onDownloadFailed(job: DownloadJob, error: String) {
-        currentJobId = null
-        updateNotification(job, createFailedProgress(job.id, error))
-        
-        // Check for next download after a short delay
-        serviceScope.launch {
-            delay(2000)
-            checkForNextDownload()
+    private fun initializeWakeLock() {
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        wakeLock = powerManager.newWakeLock(
+            PowerManager.PARTIAL_WAKE_LOCK,
+            "Downloader:DownloadWakeLock"
+        ).apply {
+            setReferenceCounted(false)
         }
     }
 
-    private suspend fun checkForNextDownload() {
-        val queuedJobs = jobRepository.getJobsByStatus(JobStatus.QUEUED).first()
-        if (queuedJobs.isNotEmpty()) {
-            startNextDownload(queuedJobs.first())
-        } else {
-            // No more downloads, stop service
-            stopSelf()
+    private fun acquireWakeLock() {
+        wakeLock?.let { lock ->
+            if (!lock.isHeld) {
+                lock.acquire(30 * 60 * 1000L)
+            }
         }
+    }
+
+    private fun releaseWakeLock() {
+        wakeLock?.let { lock ->
+            if (lock.isHeld) {
+                lock.release()
+            }
+        }
+    }
+
+    private fun updateIdleNotification() {
+        val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        notificationManager.notify(NOTIFICATION_ID, createIdleNotification())
     }
 
     private fun createNotificationChannel() {

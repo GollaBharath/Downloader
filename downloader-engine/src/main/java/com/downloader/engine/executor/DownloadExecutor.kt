@@ -66,8 +66,8 @@ class DownloadExecutor @Inject constructor(
                 currentFile = currentFilePath
             ))
 
-        } catch (e: Exception) {
-            emit(createFailedProgress(job.id, "Execution failed: ${describeError(e)}"))
+        } catch (t: Throwable) {
+            emit(createFailedProgress(job.id, classifyError(describeError(t))))
         }
     }.flowOn(Dispatchers.IO)
 
@@ -129,6 +129,22 @@ class DownloadExecutor @Inject constructor(
             ?: t.message?.takeIf { it.isNotBlank() }
             ?: "Unknown error"
         return "${root.javaClass.simpleName}: $message"
+    }
+
+    private fun classifyError(error: String): String {
+        val normalized = error.lowercase()
+        return when {
+            normalized.contains("unavailable") ||
+                normalized.contains("private video") ||
+                normalized.contains("video is private") ||
+                normalized.contains("removed by the uploader") ||
+                normalized.contains("no longer available") ||
+                normalized.contains("does not exist") -> {
+                "Video unavailable or private: $error"
+            }
+
+            else -> "Execution failed: $error"
+        }
     }
 
     private fun createFailedProgress(jobId: String, error: String): DownloadProgress {
